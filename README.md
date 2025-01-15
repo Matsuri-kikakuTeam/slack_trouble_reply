@@ -1,3 +1,3 @@
-# Ner_trouble_mechanism
+# slack_trouble_reply
 トラブルのSlackスレッドに必要/不要のボタンを表示
 不要のボタンを押したら該当ツアーが無効化される
