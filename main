@@ -1,0 +1,127 @@
+import json
+import requests
+from disablement import  disable_tour
+
+# Slack の Bot トークン
+SLACK_BOT_TOKEN = "xoxb-131037885092-8216377137031-DaUHgnRY4b6QJ4KSkgTOsLHJ"
+
+
+def slack_interactions(request):
+    """Slackのインタラクティブメッセージを受け取り、
+       ボタンが押されたときに対応する処理を行う。
+    """
+
+    # デバッグ用: リクエストヘッダとボディをログ出力
+    print("=== Request headers ===")
+    print(request.headers)
+    print("=== Request body (raw) ===")
+    print(request.get_data(as_text=True))
+
+    # POST 以外は 405
+    if request.method != "POST":
+        return ("Method Not Allowed", 405)
+
+    # Slackは "application/x-www-form-urlencoded" で payload を送ってくる
+    payload_str = request.form.get("payload")
+    if not payload_str:
+        return ("No payload found", 400)
+
+    data = json.loads(payload_str)
+
+    actions = data.get("actions", [])
+    if not actions:
+        return ("No actions found", 400)
+
+    action = actions[0]
+    action_id = action.get("action_id", "")
+    response_id = action.get("value", "")
+
+    # 元メッセージのTSを取得
+    message_ts = data["message"]["ts"]
+
+    # デバッグ用: action_id と response_id を出力
+    print(f"action_id={action_id}, response_id={response_id}")
+
+    # 元メッセージ情報
+    channel_id = data["channel"]["id"]
+
+    if action_id == "button_need":
+        # 「必要」ボタン → メッセージを「対応開始しました」に更新
+        update_slack_message(
+            channel=channel_id,
+            ts=message_ts,
+            new_text="トラブルの対応を開始しました。"
+        )
+
+    elif action_id == "button_disable":
+        print(f"[DEBUG] button_disable pressed. response_id={response_id}")
+
+        # disable_tour() がタプル (result_code, put_response, delete_response) を返す
+        result_code, put_response, delete_response = disable_tour(response_id)
+
+        # result_code が 200 なら成功
+        if result_code == 200:
+            new_text = "ツアーを無効化しました。"
+        else:
+            new_text = "ツアーの無効化に失敗しました。"
+
+        update_slack_message(
+            channel=channel_id,
+            ts=message_ts,
+            new_text=new_text
+        )
+
+
+
+    # 正常終了
+    return ("OK", 200)
+
+
+def update_slack_message(channel, ts, new_text):
+    """
+    Slackメッセージを chat.update で上書きする。
+    """
+    url = "https://slack.com/api/chat.update"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "channel": channel,
+        "ts": ts,
+        "text": new_text,
+        # ボタンを消す場合は attachments を空に
+        "attachments": []
+    }
+
+    resp = requests.post(url, headers=headers, json=payload)
+    print("update_slack_message response:", resp.json())
+    return resp.json()
+
+
+def get_api_token():
+    """
+    API から認証トークンを取得する。
+    """
+    url = 'https://api.m2msystems.cloud/login'
+    mail = "development+20211103@matsuri-tech.com"
+    password = "rYGOOh9PgUxFhjhd"
+
+    payload = {
+        "email": mail,
+        "password": password
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            json_data = response.json()
+            token = json_data.get('accessToken')
+            return token
+        else:
+            return None
+    except requests.exceptions.RequestException:
+        return None
+
+
