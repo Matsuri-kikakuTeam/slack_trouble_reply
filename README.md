@@ -1,0 +1,2 @@
+# Ner_trouble_mechanism
+トラブル報告の新バージョン。webhookを用いた仕組みを導入、社外向けと社内向けに分割。
