@@ -1,0 +1,64 @@
+from posixpath import commonpath
+import requests
+
+
+def get_api_token():
+    """
+    トークンを取得するための処理サンプル
+    """
+    url = 'https://api.m2msystems.cloud/login'
+    mail = "development+20211103@matsuri-tech.com"
+    password = "rYGOOh9PgUxFhjhd"
+
+    payload = {
+        "email": mail,
+        "password": password
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            json_data = response.json()
+            token = json_data.get('accessToken')
+            return token
+        else:
+            print(f"トークン取得に失敗しました: {response.status_code}, {response.text}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"リクエスト時にエラーが発生しました: {e}")
+        return None
+
+
+def disable_tour(response_id):
+    """
+    1 トークンを取得
+    2 ツアーを無効化する (PUT)
+    3 Unassign の DELETE を実行
+
+    - 両方が 200 の場合、(200, response_disable, response_unassign) を返す
+    - それ以外の場合は (None, response_disable, response_unassign) を返す
+    """
+
+    token = get_api_token()
+    if not token:
+        # ここも戻り値の形を合わせる (タプルで返す)
+        return None, None, None
+
+    # PUT: ツアー無効化
+    url_disable = f"https://api-cleaning.m2msystems.cloud/v3/cleanings/{response_id}"
+    payload_disable = {"isDisabled": True}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    response_disable = requests.put(url_disable, json=payload_disable, headers=headers)
+
+    # DELETE: Unassign
+    url_unassign = f"https://api-cleaning.m2msystems.cloud/v4/unassign/allCleaners/{response_id}"
+    response_unassign = requests.delete(url_unassign, headers=headers)
+
+    # 両方 200 なら 200 を返す
+    if response_disable.status_code == 200 and response_unassign.status_code == 200:
+        return 200, response_disable, response_unassign
+    else:
+        return None, response_disable, response_unassign
