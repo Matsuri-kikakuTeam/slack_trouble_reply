@@ -1,15 +1,11 @@
 import json
 import requests
-# disable_tour の import は削除またはコメントアウトしてよい
-# from disablement import disable_tour
 
-# Slack の Bot トークン
+# Slack の Bot トークン（実際の運用では安全な方法で管理してください）
 SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
-    """Slackのインタラクティブメッセージを受け取り、
-       ボタンが押されたときに対応する処理を行う。
-    """
+    """Slackのインタラクティブメッセージを受け取り、ボタンが押されたときに対応する処理を行う。"""
     print("=== Request headers ===")
     print(request.headers)
     print("=== Request body (raw) ===")
@@ -35,29 +31,20 @@ def slack_interactions(request):
 
     action = actions[0]
     action_id = action.get("action_id", "")
-
-    message_ts = data["message"]["ts"]
     print(f"action_id={action_id}")
 
+    message_ts = data["message"]["ts"]
     channel_id = data["channel"]["id"]
 
     # ユーザーへのメンション文字列
     mention = f"<@{user_id}> "
 
-    # 「必要」ボタンの処理
-    if action_id == "button_need":
+    # 「移管する」ボタンの処理
+    if action_id == "button_transfer":
         update_slack_message(
             channel=channel_id,
             ts=message_ts,
-            new_text=mention + "トラブルの対応を開始しました。"
-        )
-
-    # 「不要」ボタン押下時の処理
-    elif action_id == "button_unnecessary":
-        update_slack_message(
-            channel=channel_id,
-            ts=message_ts,
-            new_text=mention + "このトラブルは対応不要です。無効化してください"
+            new_text=mention + "移管処理が実行されました。"
         )
 
     return ("OK", 200)
@@ -80,6 +67,7 @@ def update_slack_message(channel, ts, new_text):
     resp = requests.post(url, headers=headers, json=payload)
     print("update_slack_message response:", resp.json())
     return resp.json()
+
 
 
 def get_api_token():
