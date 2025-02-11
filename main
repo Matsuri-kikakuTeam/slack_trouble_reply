@@ -1,32 +1,33 @@
 import json
 import requests
-from disablement import  disable_tour
+# disable_tour の import は削除またはコメントアウトしてよい
+# from disablement import disable_tour
 
 # Slack の Bot トークン
-SLACK_BOT_TOKEN = "xoxb-131037885092-8216377137031-DaUHgnRY4b6QJ4KSkgTOsLHJ"
-
+SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
     """Slackのインタラクティブメッセージを受け取り、
        ボタンが押されたときに対応する処理を行う。
     """
-
-    # デバッグ用: リクエストヘッダとボディをログ出力
     print("=== Request headers ===")
     print(request.headers)
     print("=== Request body (raw) ===")
     print(request.get_data(as_text=True))
 
-    # POST 以外は 405
     if request.method != "POST":
         return ("Method Not Allowed", 405)
 
-    # Slackは "application/x-www-form-urlencoded" で payload を送ってくる
     payload_str = request.form.get("payload")
     if not payload_str:
         return ("No payload found", 400)
 
     data = json.loads(payload_str)
+    
+    # ユーザー情報を取得し、IDを取り出す
+    user_info = data.get("user", {})
+    user_id = user_info.get("id", "")
+    print("User info:", user_info)
 
     actions = data.get("actions", [])
     if not actions:
@@ -34,48 +35,32 @@ def slack_interactions(request):
 
     action = actions[0]
     action_id = action.get("action_id", "")
-    response_id = action.get("value", "")
 
-    # 元メッセージのTSを取得
     message_ts = data["message"]["ts"]
+    print(f"action_id={action_id}")
 
-    # デバッグ用: action_id と response_id を出力
-    print(f"action_id={action_id}, response_id={response_id}")
-
-    # 元メッセージ情報
     channel_id = data["channel"]["id"]
 
+    # ユーザーへのメンション文字列
+    mention = f"<@{user_id}> "
+
+    # 「必要」ボタンの処理
     if action_id == "button_need":
-        # 「必要」ボタン → メッセージを「対応開始しました」に更新
         update_slack_message(
             channel=channel_id,
             ts=message_ts,
-            new_text="トラブルの対応を開始しました。"
+            new_text=mention + "トラブルの対応を開始しました。"
         )
 
-    elif action_id == "button_disable":
-        print(f"[DEBUG] button_disable pressed. response_id={response_id}")
-
-        # disable_tour() がタプル (result_code, put_response, delete_response) を返す
-        result_code, put_response, delete_response = disable_tour(response_id)
-
-        # result_code が 200 なら成功
-        if result_code == 200:
-            new_text = "ツアーを無効化しました。"
-        else:
-            new_text = "ツアーの無効化に失敗しました。"
-
+    # 「不要」ボタン押下時の処理
+    elif action_id == "button_unnecessary":
         update_slack_message(
             channel=channel_id,
             ts=message_ts,
-            new_text=new_text
+            new_text=mention + "このトラブルは対応不要です。無効化してください"
         )
 
-
-
-    # 正常終了
     return ("OK", 200)
-
 
 def update_slack_message(channel, ts, new_text):
     """
@@ -86,15 +71,12 @@ def update_slack_message(channel, ts, new_text):
         "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
         "Content-Type": "application/json"
     }
-
     payload = {
         "channel": channel,
         "ts": ts,
         "text": new_text,
-        # ボタンを消す場合は attachments を空に
         "attachments": []
     }
-
     resp = requests.post(url, headers=headers, json=payload)
     print("update_slack_message response:", resp.json())
     return resp.json()
@@ -123,5 +105,3 @@ def get_api_token():
             return None
     except requests.exceptions.RequestException:
         return None
-
-
