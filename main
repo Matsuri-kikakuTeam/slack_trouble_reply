@@ -1,11 +1,15 @@
 import json
 import requests
 
-# Slack の Bot トークン（実際の運用では安全な方法で管理してください）
+# Slack の Bot トークン（運用では環境変数などで管理してください）
 SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
-    """Slackのインタラクティブメッセージを受け取り、ボタンが押されたときに対応する処理を行う。"""
+    """
+    Slack のインタラクティブメッセージのリクエストを受け取り、
+    「移管する」ボタンが押された場合、対象スレッドを更新して
+    親スレッドのデータを同じスレッドに返信する。
+    """
     print("=== Request headers ===")
     print(request.headers)
     print("=== Request body (raw) ===")
@@ -20,7 +24,7 @@ def slack_interactions(request):
 
     data = json.loads(payload_str)
     
-    # ユーザー情報を取得し、IDを取り出す
+    # ユーザー情報の取得
     user_info = data.get("user", {})
     user_id = user_info.get("id", "")
     print("User info:", user_info)
@@ -33,25 +37,79 @@ def slack_interactions(request):
     action_id = action.get("action_id", "")
     print(f"action_id={action_id}")
 
-    message_ts = data["message"]["ts"]
+    # チャンネルIDとメッセージ情報の取得
     channel_id = data["channel"]["id"]
+    message = data.get("message", {})
+    # thread_ts があればスレッド内、なければメッセージの ts を親として利用
+    thread_ts = message.get("thread_ts") or message.get("ts")
+    print(f"thread_ts: {thread_ts}")
 
-    # ユーザーへのメンション文字列
-    mention = f"<@{user_id}> "
-
-    # 「移管する」ボタンの処理
+    # 「移管する」ボタンの場合の処理
     if action_id == "button_transfer":
+        mention = f"<@{user_id}> "
+        # 1. 親スレッドの情報を取得
+        parent_message = get_parent_message(channel_id, thread_ts)
+        print("Parent message info:", json.dumps(parent_message, indent=2, ensure_ascii=False))
+        
+        # 2. 移管処理の新規処理（任意の処理）
+        process_transfer(parent_message)
+        
+        # 3. スレッドのメッセージを更新（例: 移管処理実行の通知）
         update_slack_message(
             channel=channel_id,
-            ts=message_ts,
+            ts=message.get("ts"),
             new_text=mention + "移管処理が実行されました。"
         )
+        
+        # 4. 親スレッドのデータを同じスレッド内に送信する
+        send_parent_data_to_thread(parent_message, channel_id, thread_ts)
 
     return ("OK", 200)
 
+def get_parent_message(channel, thread_ts):
+    """
+    Slack API の conversations.history を利用して、親メッセージの詳細情報を取得する。
+    ※ inclusive は True（boolean）で指定。
+    """
+    url = "https://slack.com/api/conversations.history"
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    params = {
+        "channel": channel,
+        "latest": thread_ts,
+        "inclusive": True,
+        "limit": 1
+    }
+    
+    print("=== get_parent_message Debug Info ===")
+    print(f"Request URL: {url}")
+    print(f"Headers: {headers}")
+    print(f"Parameters: {params}")
+    
+    response = requests.get(url, headers=headers, params=params)
+    print("Response status code:", response.status_code)
+    print("Response text:", response.text)
+    
+    try:
+        data = response.json()
+        print("Response JSON:", json.dumps(data, indent=2, ensure_ascii=False))
+    except Exception as e:
+        print("Error parsing JSON:", e)
+        data = {}
+    
+    if data.get("ok") and data.get("messages"):
+        parent_msg = data["messages"][0]
+        print("Parent message retrieved:", json.dumps(parent_msg, indent=2, ensure_ascii=False))
+        return parent_msg
+    else:
+        print("Error retrieving parent message:", data.get("error"))
+        return {}
+
 def update_slack_message(channel, ts, new_text):
     """
-    Slackメッセージを chat.update で上書きする。
+    Slack の chat.update API を利用して、メッセージを更新する関数。
     """
     url = "https://slack.com/api/chat.update"
     headers = {
@@ -65,31 +123,45 @@ def update_slack_message(channel, ts, new_text):
         "attachments": []
     }
     resp = requests.post(url, headers=headers, json=payload)
-    print("update_slack_message response:", resp.json())
-    return resp.json()
+    resp_data = resp.json()
+    print("update_slack_message response:", json.dumps(resp_data, indent=2, ensure_ascii=False))
+    return resp_data
 
-
-
-def get_api_token():
+def send_parent_data_to_thread(parent_data, channel, thread_ts):
     """
-    API から認証トークンを取得する。
+    取得した親スレッドの情報を、同じスレッド内にメッセージとして送信する関数。
     """
-    url = 'https://api.m2msystems.cloud/login'
-    mail = "development+20211103@matsuri-tech.com"
-    password = "rYGOOh9PgUxFhjhd"
-
+    text = "親スレッドの情報:\n```" + json.dumps(parent_data, indent=2, ensure_ascii=False) + "```"
+    
     payload = {
-        "email": mail,
-        "password": password
+        "channel": channel,
+        "thread_ts": thread_ts,
+        "text": text
     }
+    
+    response = send_to_slack(SLACK_BOT_TOKEN, payload)
+    return response
 
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            json_data = response.json()
-            token = json_data.get('accessToken')
-            return token
-        else:
-            return None
-    except requests.exceptions.RequestException:
-        return None
+def send_to_slack(token, payload):
+    """
+    Slack の chat.postMessage API を利用してメッセージを送信する関数。
+    """
+    url = "https://slack.com/api/chat.postMessage"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    response = requests.post(url, json=payload, headers=headers)
+    response_data = response.json()
+    print(f"Slack API Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+    if not response_data.get("ok"):
+        print(f"Slack API Error: {response_data.get('error')} - Payload: {payload}")
+        raise Exception(f"Slack API Error: {response_data.get('error')}")
+    return response_data
+
+def process_transfer(parent_message):
+    """
+    移管処理における新しい処理を実行する関数の例。
+    親メッセージの情報を利用して、必要な処理（例：他 API の呼び出し、データベース更新など）を実施します。
+    """
+    text = parent_message.get("text", "")
+    ts = parent_message.get("ts", "")
+    print(f"Processing transfer for parent message ts={ts} with text: {text}")
+    # ここに必要な処理を追加してください
