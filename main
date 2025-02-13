@@ -1,72 +1,60 @@
 import json
 import requests
 from handover import making_tour
+from handover import send_report_to_slack  # 先ほど提示した send_report_to_slack 関数をインポート
 
 # Slack の Bot トークン（環境変数などで安全に管理してください）
 SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
-    """
-    Slack のインタラクティブメッセージのリクエストを受け取り、
-    「移管する」ボタンが押された場合は元のメッセージを更新し、
-    同じスレッド内に担当者選択用のボタン群を表示します。
-    また、担当部署ボタン（TASK, CX, 設備機器, SU）が押された場合は、
-    隠しデータ（report の JSON 文字列）と押されたボタンの種類をもとに
-    making_tour 関数を実行し、その結果（例: {'success': 'ok', 'cleaner_name': 'TASK', ...}）
-    を Slack に送り返します。
-    """
     print("=== Request headers ===")
     print(request.headers)
     print("=== Request body (raw) ===")
     print(request.get_data(as_text=True))
-    
+
     if request.method != "POST":
         return ("Method Not Allowed", 405)
-    
+
     payload_str = request.form.get("payload")
     if not payload_str:
         return ("No payload found", 400)
-    
+
     data = json.loads(payload_str)
     user_info = data.get("user", {})
     user_id = user_info.get("id", "")
     print("User info:", user_info)
-    
+
     actions = data.get("actions", [])
     if not actions:
         return ("No actions found", 400)
-    
+
     action = actions[0]
     action_id = action.get("action_id", "")
     print(f"action_id={action_id}")
-    
+
     channel_id = data["channel"]["id"]
     message = data.get("message", {})
-    # スレッド内なら thread_ts が存在するので、それを利用。なければメッセージの ts を利用
     thread_ts = message.get("thread_ts") or message.get("ts")
     print(f"thread_ts: {thread_ts}")
-    
+
     # 「移管する」ボタンが押された場合
     if action_id == "button_transfer":
-        # ボタンの value に埋め込まれている report のデータ（JSON文字列）を取得
         report_data_str = action.get("value", "")
         try:
             report_data = json.loads(report_data_str)
         except Exception as e:
             print("Error parsing report data from value:", e)
             report_data = {}
-        
+
         mention = f"<@{user_id}> "
-        # ① 元のメッセージを更新して「移管ボタンが押されました。」と通知
         update_slack_message(
             channel=channel_id,
             ts=message.get("ts"),
             new_text=mention + "移管ボタンが押されました。"
         )
-        # ② 担当者選択用のボタン群を同じスレッド内に送信する（隠しデータは report_data）
         team_payload = create_team_selection_payload(report_data, thread_ts)
         send_to_slack(SLACK_BOT_TOKEN, team_payload)
-    
+
     # 担当部署ボタンが押された場合
     elif action_id in ["button_TASK", "button_CX", "button_設備機器", "button_SU"]:
         hidden_value = action.get("value", "")
@@ -75,17 +63,46 @@ def slack_interactions(request):
         except Exception as e:
             print("Error parsing hidden value:", e)
             parsed_value = {}
-        
-        # making_tour 関数を実行（引数は隠しデータの report と action_id）
+
+        # making_tour 関数を実行（引数は report データと押された action_id）
         tour_response = making_tour(parsed_value, action_id)
-        # tour_response の内容を Slack に送り返す（例として JSON 文字列にして更新）
+
+        # メッセージの更新
         update_slack_message(
             channel=channel_id,
             ts=message.get("ts"),
             new_text=json.dumps(tour_response, ensure_ascii=False)
         )
-    
+
+        # announce_data の作成
+        announce_data = parsed_value.copy() if isinstance(parsed_value, dict) else {}
+        announce_data["success"] = tour_response.get("success", "")
+        announce_data["assign"] = tour_response.get("cleaner_name", "")
+        announce_data["response"] = tour_response.get("response_data", "")
+
+        # `response_data` が常に辞書型で返される前提で処理を簡素化
+        response_data = tour_response.get("response_data", "")
+        
+        # `response_data` が文字列であることを想定
+        if isinstance(response_data, str) and response_data:
+            announce_data["new_admin_url"] = f"https://manager-cleaning.m2msystems.cloud/operations/{response_data}"
+            announce_data["new_cleaner_url"] = f"https://cleaner-cleaning.m2msystems.cloud/operations/{response_data}"
+        else:
+            announce_data["new_admin_url"] = "https://manager-cleaning.m2msystems.cloud/operations/"
+            announce_data["new_cleaner_url"] = "https://cleaner-cleaning.m2msystems.cloud/operations/"
+
+        print(f"修正後のannnouce_dataです{announce_data}")
+
+        # Slack へ送信
+        send_report_to_slack([announce_data])
+
     return ("OK", 200)
+
+
+
+
+
+
 
 def create_team_selection_payload(report, thread_ts):
     """
@@ -155,21 +172,16 @@ def update_slack_message(channel, ts, new_text):
     }
     resp = requests.post(url, headers=headers, json=payload)
     resp_data = resp.json()
-    print("update_slack_message response:", json.dumps(resp_data, indent=2, ensure_ascii=False))
+    print("update_slack_message response:", resp_data)
     return resp_data
 
 def send_to_slack(token, payload):
-    """
-    Slack の chat.postMessage API を利用してメッセージを送信する関数。
-    """
     url = "https://slack.com/api/chat.postMessage"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     response = requests.post(url, json=payload, headers=headers)
     response_data = response.json()
-    print(f"Slack API Response: {json.dumps(response_data, indent=2, ensure_ascii=False)}")
+    print("Slack API Response:", response_data)
     if not response_data.get("ok"):
-        print(f"Slack API Error: {response_data.get('error')} - Payload: {payload}")
-        raise Exception(f"Slack API Error: {response_data.get('error')}")
+        print("Slack API Error:", response_data.get("error"), "- Payload:", payload)
+        raise Exception("Slack API Error: " + response_data.get("error"))
     return response_data
-
-
