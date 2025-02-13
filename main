@@ -1,85 +1,143 @@
 import json
 import requests
 
-# Slack の Bot トークン（運用では環境変数などで安全に管理してください）
+# Slack の Bot トークン（安全に管理してください）
 SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
     """
     Slack のインタラクティブメッセージのリクエストを受け取り、
-    「移管する」ボタンが押された場合、元のメッセージを更新し、
-    同じスレッド内に「TASK」「CX」「設備機器」「SU」のボタンを表示する。
+    「移管する」ボタンが押された場合は元のメッセージを更新し、担当者選択用のボタン群を表示します。
+    また、4つの担当者選択ボタン（TASK, CX, 設備機器, SU）が押された場合は、
+    押されたボタンの種類と隠しデータ（report の JSON 文字列）をパースし、同じスレッド内に送信します。
     """
     print("=== Request headers ===")
     print(request.headers)
     print("=== Request body (raw) ===")
     print(request.get_data(as_text=True))
-
+    
     if request.method != "POST":
         return ("Method Not Allowed", 405)
-
+    
     payload_str = request.form.get("payload")
     if not payload_str:
         return ("No payload found", 400)
-
-    data = json.loads(payload_str)
     
-    # ユーザー情報の取得
+    data = json.loads(payload_str)
     user_info = data.get("user", {})
     user_id = user_info.get("id", "")
     print("User info:", user_info)
-
+    
     actions = data.get("actions", [])
     if not actions:
         return ("No actions found", 400)
-
+    
     action = actions[0]
     action_id = action.get("action_id", "")
     print(f"action_id={action_id}")
-
-    # チャンネルIDとメッセージ情報の取得
+    
     channel_id = data["channel"]["id"]
     message = data.get("message", {})
-    # スレッド内なら thread_ts が存在するので、なければメッセージの ts を利用
+    # スレッド内なら thread_ts が存在するので、それを利用。なければメッセージの ts を利用
     thread_ts = message.get("thread_ts") or message.get("ts")
     print(f"thread_ts: {thread_ts}")
-
-    # 「移管する」ボタンが押された場合の処理
+    
+    # 「移管する」ボタンが押された場合
     if action_id == "button_transfer":
+        # ボタンの value に埋め込まれている report のデータ（JSON文字列）を取得
+        report_data_str = action.get("value", "")
+        try:
+            report_data = json.loads(report_data_str)
+        except Exception as e:
+            print("Error parsing report data from value:", e)
+            report_data = {}
+        
         mention = f"<@{user_id}> "
-        # 1. 元のメッセージを更新して通知（例：移管処理が実行されました）
+        # ① 元のメッセージを更新して「移管ボタンが押されました。」と通知
         update_slack_message(
             channel=channel_id,
             ts=message.get("ts"),
-            new_text=mention + "移管処理が実行されました。"
+            new_text=mention + "移管ボタンが押されました。"
         )
-        # 2. 担当者選択用のボタン群を同じスレッド内に送信
-        team_payload = create_team_selection_payload(data, thread_ts)
+        # ② 担当者選択用のボタン群を同じスレッド内に送信する（ここでは report_data を value に保持）
+        team_payload = create_team_selection_payload(report_data, thread_ts)
         send_to_slack(SLACK_BOT_TOKEN, team_payload)
-
-
-        # 3. 親スレッドの情報を取得
-        parent_message = get_parent_message(channel_id, thread_ts)
-        print("Parent message info:", json.dumps(parent_message, indent=2, ensure_ascii=False))
-        
-        # 4. 移管処理の新規処理（任意の処理）
-        process_transfer(parent_message)
-        
-        # 5. スレッドのメッセージを更新（例: 移管処理実行の通知）
+    
+    # 担当者選択用の4つのボタンが押された場合
+    elif action_id in ["button_TASK", "button_CX", "button_設備機器", "button_SU"]:
+        hidden_value = action.get("value", "")
+        try:
+            parsed_value = json.loads(hidden_value)
+        except Exception as e:
+            print("Error parsing hidden value:", e)
+            parsed_value = {}
+        details_text = (
+            "押されたボタンの種類: " + action_id + "\n" +
+            "隠しデータ: " + json.dumps(parsed_value, ensure_ascii=False)
+        )
+        # 同じスレッド内に結果を送信（元メッセージを更新）
         update_slack_message(
             channel=channel_id,
             ts=message.get("ts"),
-            new_text=mention + "移管処理が実行されました。"
+            new_text=details_text
         )
-        
-        # 6. 親スレッドのデータを同じスレッド内に送信する
-        send_parent_data_to_thread(parent_message, channel_id, thread_ts)
-
+    
     return ("OK", 200)
+
+def create_team_selection_payload(report, thread_ts):
+    """
+    隠しデータ（report の内容）を value に持たせた、担当者選択用のボタン群を含むペイロードを生成する関数。
+    表示されるボタンは「TASK」「CX」「設備機器」「SU」です。
+    """
+    report_json = json.dumps(report, ensure_ascii=False)
+    return {
+        "channel": "C07AHJ1T17E",
+        "text": "担当者を選択してください。",
+        "thread_ts": thread_ts,
+        "attachments": [
+            {
+                "blocks": [
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "TASK", "emoji": True},
+                                "style": "primary",
+                                "action_id": "button_TASK",
+                                "value": report_json
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "CX", "emoji": True},
+                                "style": "primary",
+                                "action_id": "button_CX",
+                                "value": report_json
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "設備機器", "emoji": True},
+                                "style": "primary",
+                                "action_id": "button_設備機器",
+                                "value": report_json
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "SU", "emoji": True},
+                                "style": "primary",
+                                "action_id": "button_SU",
+                                "value": report_json
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
 
 def update_slack_message(channel, ts, new_text):
     """
-    Slack の chat.update API を利用してメッセージを更新する関数。
+    Slack の chat.update API を利用して、指定されたメッセージを更新する関数。
     """
     url = "https://slack.com/api/chat.update"
     headers = {
@@ -110,117 +168,3 @@ def send_to_slack(token, payload):
         print(f"Slack API Error: {response_data.get('error')} - Payload: {payload}")
         raise Exception(f"Slack API Error: {response_data.get('error')}")
     return response_data
-
-
-def create_team_selection_payload(report, thread_ts):
-    """
-    担当者選択用のボタン群を含むインタラクティブメッセージのペイロードを生成する関数。
-    表示されるボタンは「TASK」「CX」「設備機器」「SU」です。
-    """
-    return {
-        "channel": "C07AHJ1T17E",
-        "text": "トラブルの移管を行います。担当部署を選択してください。",
-        "thread_ts": thread_ts,
-        "attachments": [
-            {
-                "blocks": [
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "TASK", "emoji": True},
-                                "style": "primary",
-                                "action_id": "button_TASK"
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "CX", "emoji": True},
-                                "style": "primary",
-                                "action_id": "button_CX"
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "設備機器", "emoji": True},
-                                "style": "primary",
-                                "action_id": "button_設備機器"
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "SU", "emoji": True},
-                                "style": "primary",
-                                "action_id": "button_SU"
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
-    }
-
-
-def get_parent_message(channel, thread_ts):
-    """
-    Slack API の conversations.history を利用して、親メッセージの詳細情報を取得する。
-    ※ inclusive は True（boolean）で指定。
-    """
-    url = "https://slack.com/api/conversations.history"
-    headers = {
-        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    params = {
-        "channel": channel,
-        "latest": thread_ts,
-        "inclusive": True,
-        "limit": 1
-    }
-    
-    print("=== get_parent_message Debug Info ===")
-    print(f"Request URL: {url}")
-    print(f"Headers: {headers}")
-    print(f"Parameters: {params}")
-    
-    response = requests.get(url, headers=headers, params=params)
-    print("Response status code:", response.status_code)
-    print("Response text:", response.text)
-    
-    try:
-        data = response.json()
-        print("Response JSON:", json.dumps(data, indent=2, ensure_ascii=False))
-    except Exception as e:
-        print("Error parsing JSON:", e)
-        data = {}
-    
-    if data.get("ok") and data.get("messages"):
-        parent_msg = data["messages"][0]
-        print("Parent message retrieved:", json.dumps(parent_msg, indent=2, ensure_ascii=False))
-        return parent_msg
-    else:
-        print("Error retrieving parent message:", data.get("error"))
-        return {}
-
-def send_parent_data_to_thread(parent_data, channel, thread_ts):
-    """
-    取得した親スレッドの情報を、同じスレッド内にメッセージとして送信する関数。
-    """
-    text = "親スレッドの情報:\n```" + json.dumps(parent_data, indent=2, ensure_ascii=False) + "```"
-    
-    payload = {
-        "channel": channel,
-        "thread_ts": thread_ts,
-        "text": text
-    }
-    
-    response = send_to_slack(SLACK_BOT_TOKEN, payload)
-    return response
-
-def process_transfer(parent_message):
-    """
-    移管処理における新しい処理を実行する関数の例。
-    親メッセージの情報を利用して、必要な処理（例：他 API の呼び出し、データベース更新など）を実施します。
-    """
-    text = parent_message.get("text", "")
-    ts = parent_message.get("ts", "")
-    print(f"Processing transfer for parent message ts={ts} with text: {text}")
-    # ここに必要な処理を追加してください
