@@ -1,15 +1,19 @@
 import json
 import requests
+from handover import making_tour
 
-# Slack の Bot トークン（安全に管理してください）
+# Slack の Bot トークン（環境変数などで安全に管理してください）
 SLACK_BOT_TOKEN = "トークン"
 
 def slack_interactions(request):
     """
     Slack のインタラクティブメッセージのリクエストを受け取り、
-    「移管する」ボタンが押された場合は元のメッセージを更新し、担当者選択用のボタン群を表示します。
-    また、4つの担当者選択ボタン（TASK, CX, 設備機器, SU）が押された場合は、
-    押されたボタンの種類と隠しデータ（report の JSON 文字列）をパースし、同じスレッド内に送信します。
+    「移管する」ボタンが押された場合は元のメッセージを更新し、
+    同じスレッド内に担当者選択用のボタン群を表示します。
+    また、担当部署ボタン（TASK, CX, 設備機器, SU）が押された場合は、
+    隠しデータ（report の JSON 文字列）と押されたボタンの種類をもとに
+    making_tour 関数を実行し、その結果（例: {'success': 'ok', 'cleaner_name': 'TASK', ...}）
+    を Slack に送り返します。
     """
     print("=== Request headers ===")
     print(request.headers)
@@ -59,11 +63,11 @@ def slack_interactions(request):
             ts=message.get("ts"),
             new_text=mention + "移管ボタンが押されました。"
         )
-        # ② 担当者選択用のボタン群を同じスレッド内に送信する（ここでは report_data を value に保持）
+        # ② 担当者選択用のボタン群を同じスレッド内に送信する（隠しデータは report_data）
         team_payload = create_team_selection_payload(report_data, thread_ts)
         send_to_slack(SLACK_BOT_TOKEN, team_payload)
     
-    # 担当者選択用の4つのボタンが押された場合
+    # 担当部署ボタンが押された場合
     elif action_id in ["button_TASK", "button_CX", "button_設備機器", "button_SU"]:
         hidden_value = action.get("value", "")
         try:
@@ -71,15 +75,14 @@ def slack_interactions(request):
         except Exception as e:
             print("Error parsing hidden value:", e)
             parsed_value = {}
-        details_text = (
-            "押されたボタンの種類: " + action_id + "\n" +
-            "隠しデータ: " + json.dumps(parsed_value, ensure_ascii=False)
-        )
-        # 同じスレッド内に結果を送信（元メッセージを更新）
+        
+        # making_tour 関数を実行（引数は隠しデータの report と action_id）
+        tour_response = making_tour(parsed_value, action_id)
+        # tour_response の内容を Slack に送り返す（例として JSON 文字列にして更新）
         update_slack_message(
             channel=channel_id,
             ts=message.get("ts"),
-            new_text=details_text
+            new_text=json.dumps(tour_response, ensure_ascii=False)
         )
     
     return ("OK", 200)
@@ -168,3 +171,5 @@ def send_to_slack(token, payload):
         print(f"Slack API Error: {response_data.get('error')} - Payload: {payload}")
         raise Exception(f"Slack API Error: {response_data.get('error')}")
     return response_data
+
+
