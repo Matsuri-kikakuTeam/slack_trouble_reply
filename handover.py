@@ -152,21 +152,40 @@ def send_report_to_slack(sent_contents):
                 property_name = report.get('property_name', '')
 
                 if made_success == "ok":
-                    # 1) メインメッセージをSlackへ送信
+                    # 1) メインメッセージをSlackへ送信（最初の移管メッセージ）
                     message_payload = create_message_payload(report, trouble_contents, assign, property_name)
                     main_message_response = send_to_slack(slack_token, message_payload)
 
                     # 2) メインメッセージの ts を thread_ts として取得
                     thread_ts = main_message_response.get('ts')
 
-                    # 3) 無効化（deactivate）用のメッセージを作成＆送信（同じスレッドに投稿）
+                    # 3) スレッドURLを作成
+                    new_thread_url = f"https://slack.com/archives/{main_message_response['channel']}/p{thread_ts.replace('.', '')}"
+
+                    # 4) 無効化（deactivate）用のメッセージを作成＆送信（同じスレッドに投稿）
                     deactivate_payload = create_takeover_payload(report, thread_ts)
                     send_to_slack(slack_token, deactivate_payload)
 
-                    # 4) 特定のトラブル内容ならリプライを送る
-                    if trouble_contents == "アメニティ・リネン・消耗品不備":
-                        reply_payload = create_reply_payload(report, thread_ts, property_name)
-                        send_to_slack(slack_token, reply_payload)
+                    # 5) 部署選択ボタンのスレッドを投稿
+                    team_selection_payload = create_team_selection_payload(report, thread_ts)
+                    team_selection_response = send_to_slack(slack_token, team_selection_payload)
+
+                    # 6) 部署選択ボタンが押されてツアー作成
+                    # ここでツアー作成を行い、ツアーの情報を取得
+                    tour_response = making_tour(report, "button_TASK")  # 例: action_idが "button_TASK" の場合
+                    announce_data = report.copy()
+                    announce_data["new_thread_url"] = new_thread_url  # スレッドURLを追加
+                    announce_data["thread_ts"] = thread_ts  # 最初のスレッドのタイムスタンプを追加
+                    announce_data["tour_info"] = tour_response.get("response_data", "ツアー情報が見つかりませんでした")
+
+                    # 7) ツアー作成情報を新しく作成されたスレッドに投稿
+                    announce_payload = create_announce_payload(announce_data)
+                    send_to_slack(slack_token, announce_payload)  # thread_tsを使用して、元のスレッドに追加投稿
+
+                    # 8) 部署選択スレッドを上書きして新しい情報を投稿
+                    # 部署選択ボタンが押されたスレッドに「新しいツアー作成完了！」を投稿
+                    update_payload = create_update_announce_payload(announce_data)
+                    send_to_slack(slack_token, update_payload)  # 部署選択スレッドを上書き
 
                 elif made_success == "error":
                     error_payload = create_error_payload(report)
@@ -184,6 +203,9 @@ def send_report_to_slack(sent_contents):
         success_results.append({"success": "error"})
 
     return success_results
+
+
+
 
 def create_message_payload(report, trouble_contents, assign, property_name):
     # None の場合は空文字に置き換える
@@ -378,13 +400,18 @@ def update_slack_message(channel, ts, new_text):
 def send_to_slack(token, payload):
     url = "https://slack.com/api/chat.postMessage"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    
+    # 送信するペイロードに `thread_ts` を含めることで、スレッドに追加
     response = requests.post(url, json=payload, headers=headers)
     response_data = response.json()
+    
     print("Slack API Response:", response_data)
     if not response_data.get("ok"):
         print("Slack API Error:", response_data.get("error"), "- Payload:", payload)
         raise Exception("Slack API Error: " + response_data.get("error"))
+    
     return response_data
+
 
 def format_date(date):
     if not date:
@@ -410,3 +437,29 @@ def convert_iso_to_custom_format(iso_string):
         except ValueError:
             return "N/A"  # 解析できない場合のデフォルト値
     return date.strftime('%Y/%m/%d %H:%M:%S')
+
+
+def create_update_announce_payload(announce_data):
+    """
+    部署選択スレッドの返信を上書きするためのペイロードを作成する関数
+    """
+    return {
+        "channel": "C07AHJ1T17E",  # 適切なチャンネルIDに置き換え
+        "text": f"新しいツアー作成完了！ {announce_data.get('new_thread_url')}",
+        "thread_ts": announce_data.get('thread_ts'),  # 最初のスレッドのタイムスタンプを指定
+        "attachments": [
+            {
+                "color": "#00FF00",  # 成功を示す緑色
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "新しいツアー作成完了！", "emoji": True}
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*ツアー情報:*\n{announce_data.get('tour_info', '情報がありません')}"}
+                    }
+                ]
+            }
+        ]
+    }
